@@ -187,16 +187,18 @@ with tabs[3]:
                 elif row['Rule_Type'] == "Uniqueness": rule["uniquenessExpectation"] = {}
                 elif row['Rule_Type'] == "SqlAssertion":
                     sql_val = st.text_input(f"Confirm SQL for: {row['Rule_Logic']}", value="SELECT ...", key=f"sql_{table_id}_{index}")
-                    rule["customSqlStatementExpectation"] = {"sqlStatement": sql_val}
+                    # 2026 Standard: sqlAssertionExpectation fails if rows are returned
+                    rule["sqlAssertionExpectation"] = {"sqlStatement": sql_val}
                 yaml_content["dataQualitySpec"]["rules"].append(rule)
 
             if st.button(f"Generate & Log for {t}", key=f"gen_btn_{t}"):
                 with open(os.path.join(t_dir, "dq_spec.yaml"), 'w', encoding="utf-8") as f: yaml.dump(yaml_content, f)
+                # 2026 Standard URI: //bigquery.googleapis.com/projects/...
                 cmd = f"gcloud dataplex datascans create data-quality {group.iloc[0]['Scan_ID']} ^\n" \
                       f"    --location={group.iloc[0]['Location']} ^\n" \
-                      f"    --data-source-resource=//bigquery.googleapis.com/projects/{p}/datasets/{d}/tables/{t} ^\n" \
-                      f"    --data-quality-spec-file=outputs/{p}_{d}_{t}/dq_spec.yaml ^\n" \
-                      f"    --incremental-field={group.iloc[0]['Incremental_Field']}"
+                      f"    --data-source-resource=\"//bigquery.googleapis.com/projects/{p}/datasets/{d}/tables/{t}\" ^\n" \
+                      f"    --data-quality-spec-file=\"dq_spec.yaml\" ^\n" \
+                      f"    --incremental-field=\"{group.iloc[0]['Incremental_Field']}\""
                 with open(os.path.join(t_dir, "create_scan.bat"), "w", encoding="utf-8") as f: f.write("@echo off\n" + cmd)
                 log_step("P3", t, "Generated Configuration", {"yaml": yaml_content, "batch": cmd})
                 st.success(f"Saved to {t_dir}")
