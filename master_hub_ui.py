@@ -140,27 +140,68 @@ with tabs[1]:
 # --- Tab 2: Verify Columns ---
 with tabs[2]:
     st.header("Phase 2: Rules File Verification")
-    r_file = st.file_uploader("Upload Rules CSV", type=["csv"])
-    d_file = st.file_uploader("Upload Target Data File", type=["csv", "xlsx"])
+    st.markdown("Upload your Rules CSV to check if your columns match the official BigQuery schema.")
     
-    if r_file and d_file:
+    r_file = st.file_uploader("Upload Rules CSV", type=["csv"])
+    
+    if r_file:
         rules_df = pd.read_csv(r_file)
-        headers = list(pd.read_csv(d_file, nrows=0).columns) if d_file.name.endswith('.csv') else list(pd.read_excel(d_file, nrows=0).columns)
-        
         mismatches = []
-        for col in rules_df['Column_Name'].dropna().unique():
-            status = "✅ OK" if col in headers else "❌ Missing"
-            sugg = next((h for h in headers if h.strip().lower() == col.strip().lower()), "") if status == "❌ Missing" else ""
-            mismatches.append({"Rule Column": col, "Status": status, "Suggestion": sugg})
         
-        st.table(pd.DataFrame(mismatches))
-        if st.button("Save Verification Report"):
-            for _, row in rules_df.iterrows():
-                t_dir = get_table_dir(row['Source_Project'], row['Source_Dataset'], row['Source_Table'])
-                pd.DataFrame(mismatches).to_csv(os.path.join(t_dir, "verification_report.csv"), index=False)
-                log_step("P2", row['Source_Table'], "Generated verification report")
-            st.success("Reports saved.")
-            st.session_state.rules_df = rules_df
+        try:
+            client = get_bq_client()
+            # Identify unique tables in the rules file
+            tables = rules_df[['Source_Project', 'Source_Dataset', 'Source_Table']].drop_duplicates()
+            
+            for _, row in tables.iterrows():
+                p, d, t = row['Source_Project'], row['Source_Dataset'], row['Source_Table']
+                table_ref = f"{p}.{d}.{t}"
+                st.write(f"🔍 Verifying rules for: **{table_ref}**")
+                
+                # Try to load local schema artifact first
+                t_dir = get_table_dir(p, d, t)
+                artifact_path = os.path.join(t_dir, "schema_discovered.json")
+                
+                if os.path.exists(artifact_path):
+                    with open(artifact_path, 'r') as f:
+                        schema_data = json.load(f)
+                    bq_cols = [c['Name'] for c in schema_data]
+                else:
+                    # Fetch from BQ if artifact missing
+                    bq_table = client.get_table(table_ref)
+                    bq_cols = [f.name for f in bq_table.schema]
+                
+                # Check columns for this specific table
+                table_rules = rules_df[
+                    (rules_df['Source_Project'] == p) & 
+                    (rules_df['Source_Dataset'] == d) & 
+                    (rules_df['Source_Table'] == t)
+                ]
+                
+                for rc in table_rules['Column_Name'].dropna().unique():
+                    if rc not in bq_cols:
+                        suggestion = next((bc for bc in bq_cols if bc.strip().lower() == rc.strip().lower()), "No match")
+                        mismatches.append({"Table": t, "Rule Column": rc, "Status": "❌ Missing in BQ", "Suggestion": suggestion})
+                    else:
+                        mismatches.append({"Table": t, "Rule Column": rc, "Status": "✅ OK", "Suggestion": ""})
+            
+            st.subheader("Verification Report (BigQuery Alignment)")
+            st.table(pd.DataFrame(mismatches))
+            
+            if st.button("Save Verification Report"):
+                for _, row in tables.iterrows():
+                    p, d, t = row['Source_Project'], row['Source_Dataset'], row['Source_Table']
+                    t_dir = get_table_dir(p, d, t)
+                    report_file = os.path.join(t_dir, "verification_report.csv")
+                    # Filter report for this table
+                    table_mismatches = [m for m in mismatches if m['Table'] == t]
+                    pd.DataFrame(table_mismatches).to_csv(report_file, index=False)
+                    log_step("P2", t, "Generated metadata verification report", {"report": table_mismatches})
+                st.success("Reports saved in table folders.")
+                st.session_state.rules_df = rules_df
+                
+        except Exception as e:
+            st.error(f"Verification Error: {e}")
 
 # --- Tab 3: Generate Configs ---
 with tabs[3]:
